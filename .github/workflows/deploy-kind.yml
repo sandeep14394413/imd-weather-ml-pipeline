@@ -1,0 +1,61 @@
+name: Deploy IMD Weather ML to kind
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      cluster_name:
+        description: kind cluster name
+        required: false
+        default: kind
+
+env:
+  KIND_CLUSTER_NAME: ${{ inputs.cluster_name || 'kind' }}
+  NAMESPACE: imd-weather
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Train and test latest model
+        shell: pwsh
+        run: |
+          python -m src.train_baseline
+          python -m pytest
+
+      - name: Build ML image
+        shell: pwsh
+        run: docker build -t imd-weather-ml:${{ github.sha }} .
+
+      - name: Load ML image into kind
+        shell: pwsh
+        run: kind load docker-image imd-weather-ml:${{ github.sha }} --name $env:KIND_CLUSTER_NAME
+
+      - name: Deploy ML service
+        shell: pwsh
+        run: |
+          kubectl apply -f k8s/00-namespace.yaml
+          kubectl apply -f k8s/10-ml.yaml
+          kubectl -n $env:NAMESPACE set image deployment/imd-weather-ml ml=imd-weather-ml:${{ github.sha }}
+          kubectl -n $env:NAMESPACE rollout status deployment/imd-weather-ml --timeout=180s
+
+      - name: Verify ML service
+        shell: pwsh
+        run: |
+          kubectl -n $env:NAMESPACE run ml-smoke-test --rm -i --restart=Never --image=curlimages/curl:8.11.1 -- `
+            curl -fsS http://imd-weather-ml:8010/health

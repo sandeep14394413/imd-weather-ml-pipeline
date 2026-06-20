@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: imd-weather-ml
+  namespace: imd-weather
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: imd-weather-ml
+  template:
+    metadata:
+      labels:
+        app: imd-weather-ml
+    spec:
+      containers:
+        - name: ml
+          image: imd-weather-ml:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8010
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8010
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8010
+            initialDelaySeconds: 20
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: imd-weather-ml
+  namespace: imd-weather
+spec:
+  selector:
+    app: imd-weather-ml
+  ports:
+    - name: http
+      port: 8010
+      targetPort: 8010
