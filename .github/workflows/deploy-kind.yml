@@ -21,10 +21,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
+      - name: Verify Python
+        shell: powershell
+        run: |
+         python --version
+         pip --version
 
       - name: Install dependencies
         shell: powershell
