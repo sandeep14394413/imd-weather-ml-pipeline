@@ -1,9 +1,11 @@
+import time
 from pathlib import Path
 
 import joblib
 import pandas as pd
 
 from src.features import build_training_frame
+from src.mlflow_utils import log_training_metrics, setup_mlflow
 
 
 MODEL_PATH = Path("models/baseline_climatology.joblib")
@@ -52,11 +54,24 @@ def train_baseline(frame: pd.DataFrame) -> dict:
 
 
 def main():
+    setup_mlflow()
+    
+    start_time = time.time()
+    
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     frame = make_demo_training_data()
     model = train_baseline(frame)
     joblib.dump(model, MODEL_PATH)
+    
+    training_time = time.time() - start_time
+    
+    # Log metrics to MLflow
+    log_training_metrics(frame, model, training_time)
+    
     print(f"Saved baseline model to {MODEL_PATH}")
+    print(f"Training completed in {training_time:.2f} seconds")
+    print(f"Model states: {model['states']}")
+    print(f"Global mean temperature: {model['global_mean']}°C")
 
 
 if __name__ == "__main__":
