@@ -11,7 +11,7 @@ on:
         default: prod-cluster
 
 env:
-  KIND_CLUSTER_NAME: ${{ inputs.cluster_name || 'kind' }}
+  KIND_CLUSTER_NAME: ${{ inputs.cluster_name || 'prod-cluster' }}
   NAMESPACE: imd-weather
 
 jobs:
