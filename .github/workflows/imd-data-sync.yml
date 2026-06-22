@@ -35,7 +35,6 @@ on:
         required: false
         default: "2024"
 
-# FIX: contents:write to push data files, actions:write to trigger deploy-kind.yml
 permissions:
   contents: write
   actions: write
@@ -60,7 +59,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
@@ -113,7 +112,7 @@ jobs:
             Write-Host "No data changes detected."
           }
 
-      - name: Commit updated data files
+      - name: Commit and push updated data files
         if: steps.check-changes.outputs.data_changed == 'true'
         shell: powershell
         env:
@@ -121,11 +120,18 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Stage data files BEFORE pulling so they survive the rebase
           git add data/processed/imd_tmax_daily.parquet
           git add data/processed/data_summary.json
           $dateStr = Get-Date -Format "yyyy-MM-dd"
           git commit -m "data: daily IMD sync $dateStr  [skip ci]"
-          git push https://x-access-token:$env:GH_TOKEN@github.com/${{ github.repository }}.git HEAD:main
+
+          # FIX: rebase on top of any commits pushed since checkout
+          # (e.g. workflow fixes pushed mid-run cause non-fast-forward)
+          $remote = "https://x-access-token:$env:GH_TOKEN@github.com/${{ github.repository }}.git"
+          git pull --rebase $remote main
+          git push $remote HEAD:main
 
       - name: Print sync summary
         shell: powershell
@@ -141,9 +147,6 @@ jobs:
 
   # ----------------------------------------------------------
   # Job 2: Trigger deploy pipeline only when data changed
-  # FIX: use gh CLI instead of actions/github-script@v7
-  #      github-script dispatches via deprecated API and needs
-  #      Node 20 which is also deprecated on self-hosted runners.
   # ----------------------------------------------------------
   trigger-deploy:
     name: Trigger deploy pipeline
