@@ -6,7 +6,7 @@
 #   2. workflow_dispatch  (manual / called by imd-data-sync.yml)
 #
 # The [skip ci] commits from the data sync job do NOT trigger
-# this workflow via push — it is triggered explicitly by the
+# this workflow via push -- it is triggered explicitly by the
 # trigger-deploy job in imd-data-sync.yml instead.
 # ============================================================
 
@@ -58,7 +58,7 @@ jobs:
             Write-Host "Date range   : $($s.date_min) to $($s.date_max)"
             Write-Host "State count  : $($s.state_count)"
           } else {
-            Write-Host "No data summary found — will use synthetic fallback during training."
+            Write-Host "No data summary found - will use synthetic fallback during training."
           }
 
       - name: Train and test latest model
