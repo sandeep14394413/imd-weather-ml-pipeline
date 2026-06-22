@@ -11,9 +11,9 @@ Strategy (in order of preference)
    download where a stable URL exists.
 2. IRI / LDEO Data Library  (iridl.ldeo.columbia.edu) – NCEP reanalysis
    NetCDF, no auth, covers 1948-present.
-3. Open-Meteo historical API (api.open-meteo.com) – JSON, free, no key,
+3. Open-Meteo historical API (open-meteo.com) – JSON, free, no key,
    covers 1940-present at 0.1° resolution.  Used as a reliable fallback
-   and for the *incremental daily update* (yesterday’s data).
+   and for the *incremental daily update* (yesterday's data).
 
 Usage
 -----
@@ -60,8 +60,9 @@ SESSION.headers.update({"User-Agent": "imd-weather-ml-pipeline/1.0 (research)"})
 
 # ---------------------------------------------------------------------------
 # Open-Meteo API  —  free, no key, 1940-present, 0.1° grid
+# FIX: correct endpoint is api.open-meteo.com/v1/archive (not archive.api.*)
 # ---------------------------------------------------------------------------
-OM_URL = "https://archive.api.open-meteo.com/v1/archive"
+OM_URL = "https://api.open-meteo.com/v1/archive"
 
 
 def fetch_openmeteo_state(
@@ -114,9 +115,16 @@ def fetch_openmeteo_all_states(
         df = fetch_openmeteo_state(state, lat, lon, start, end)
         frames.append(df)
         time.sleep(0.3)  # polite rate-limiting
-    if not frames:
-        return pd.DataFrame()
-    combined = pd.concat(frames, ignore_index=True)
+
+    # FIX: guard against all-empty frames to avoid KeyError: 'date' on sort
+    non_empty = [f for f in frames if not f.empty]
+    if not non_empty:
+        log.error(
+            "All state fetches returned empty — check network access to api.open-meteo.com"
+        )
+        return pd.DataFrame(columns=["date", "state", "tmax_c"])
+
+    combined = pd.concat(non_empty, ignore_index=True)
     return combined.sort_values(["date", "state"]).reset_index(drop=True)
 
 
@@ -250,11 +258,22 @@ def run_historical(start_year: int, end_year: int) -> None:
         write_summary_json(final)
         log.info("Historical backfill complete. %d new rows added.", len(new_data))
     else:
-        log.warning("No new data fetched.")
+        log.warning("No new data fetched — check connectivity to api.open-meteo.com")
+        # Write a minimal summary so downstream workflow steps don't crash
+        summary_path = ROOT / "data" / "processed" / "data_summary.json"
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text(json.dumps({
+            "last_updated": datetime.utcnow().isoformat() + "Z",
+            "total_rows": 0,
+            "date_min": None,
+            "date_max": None,
+            "states": [],
+            "state_count": 0,
+        }, indent=2))
 
 
 def run_daily() -> None:
-    """Fetch yesterday’s data and append to the Parquet store."""
+    """Fetch yesterday's data and append to the Parquet store."""
     yesterday = date.today() - timedelta(days=1)
     log.info("=== DAILY UPDATE for %s ===", yesterday)
     df = fetch_openmeteo_all_states(yesterday, yesterday)
@@ -276,7 +295,7 @@ def main() -> None:
         "--mode",
         choices=["historical", "daily"],
         default="daily",
-        help="'historical' for 40-year backfill, 'daily' for yesterday’s update",
+        help="'historical' for 40-year backfill, 'daily' for yesterday's update",
     )
     parser.add_argument("--start-year", type=int, default=1985)
     parser.add_argument("--end-year", type=int, default=datetime.now().year - 1)
