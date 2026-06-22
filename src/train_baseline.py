@@ -6,25 +6,23 @@ import joblib
 import pandas as pd
 
 from src.features import build_training_frame
-from src.imd_ingest import raw_dir_to_dataframe
+from src.imd_ingest import load_from_parquet, raw_dir_to_dataframe
 from src.mlflow_utils import log_training_metrics, setup_mlflow
 
 log = logging.getLogger(__name__)
 
 MODEL_PATH = Path("models/baseline_climatology.joblib")
+PARQUET_PATH = Path("data/processed/imd_tmax_daily.parquet")
 RAW_DATA_DIR = Path("data/raw/tmax")
 
 
 def make_demo_training_data() -> pd.DataFrame:
-    """Synthetic fallback used only when no real IMD data is present."""
+    """Synthetic fallback — used only when no scraped data is present."""
     import math
     dates = pd.date_range("1985-01-01", "2024-12-31", freq="D")
     state_offsets = {
-        "Delhi": 1.5,
-        "Maharashtra": 0.7,
-        "Karnataka": -0.2,
-        "Tamil Nadu": 0.8,
-        "West Bengal": 0.1,
+        "Delhi": 1.5, "Maharashtra": 0.7, "Karnataka": -0.2,
+        "Tamil Nadu": 0.8, "West Bengal": 0.1,
     }
     rows = []
     for state, offset in state_offsets.items():
@@ -32,46 +30,42 @@ def make_demo_training_data() -> pd.DataFrame:
             30 + offset + 7 * math.sin((day - 80) / 365 * 2 * math.pi)
             for day in dates.dayofyear
         ]
-        rows.extend(
-            {"date": date, "state": state, "tmax_c": float(temp)}
-            for date, temp in zip(dates, seasonal)
-        )
+        rows.extend({"date": d, "state": state, "tmax_c": float(t)} for d, t in zip(dates, seasonal))
     return pd.DataFrame(rows)
 
 
-def load_training_data(raw_dir: Path = RAW_DATA_DIR) -> tuple[pd.DataFrame, bool]:
+def load_training_data() -> tuple[pd.DataFrame, str]:
     """
-    Try to load real IMD data from *raw_dir*.
-    Falls back to synthetic data if the directory is empty or missing.
-
-    Returns
-    -------
-    (frame, is_real) — DataFrame and whether the data is real IMD data.
+    Priority:
+      1. Processed Parquet store  (produced by scrape_imd_data.py)
+      2. Raw .GRD / .nc files in data/raw/tmax/
+      3. Synthetic demo data (fallback, logs a warning)
+    Returns (frame, source_label).
     """
-    if raw_dir.exists() and any(raw_dir.glob("*")):
-        log.info("Loading real IMD data from %s", raw_dir)
+    if PARQUET_PATH.exists():
         try:
-            frame = raw_dir_to_dataframe(raw_dir, product="tmax")
-            log.info("Loaded %d rows of real IMD data", len(frame))
-            return frame, True
+            return load_from_parquet(PARQUET_PATH), "parquet_store"
         except Exception as exc:
-            log.warning("Failed to load real data (%s) — falling back to synthetic", exc)
+            log.warning("Parquet load failed (%s) — trying raw files", exc)
+
+    if RAW_DATA_DIR.exists() and any(RAW_DATA_DIR.glob("*")):
+        try:
+            return raw_dir_to_dataframe(RAW_DATA_DIR, product="tmax"), "raw_grd_nc"
+        except Exception as exc:
+            log.warning("Raw file load failed (%s) — falling back to synthetic", exc)
 
     log.warning(
-        "No IMD data found in %s. Using synthetic data.\n"
-        "Run: python scripts/download_imd_data.py --product tmax --years 5",
-        raw_dir,
+        "No real data found. Using synthetic data.\n"
+        "Run first: python scripts/scrape_imd_data.py --mode historical"
     )
-    return make_demo_training_data(), False
+    return make_demo_training_data(), "synthetic_demo"
 
 
 def train_baseline(frame: pd.DataFrame) -> dict:
     training = build_training_frame(frame)
     lookup = (
         training.groupby(["state", "day_of_year"])["tmax_c"]
-        .mean()
-        .round(2)
-        .to_dict()
+        .mean().round(2).to_dict()
     )
     return {
         "type": "seasonal_climatology",
@@ -85,23 +79,21 @@ def train_baseline(frame: pd.DataFrame) -> dict:
 def main():
     logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
     setup_mlflow()
-
     start_time = time.time()
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    frame, is_real = load_training_data(RAW_DATA_DIR)
-    data_source = "real_imd" if is_real else "synthetic_demo"
-    log.info("Data source: %s  |  rows: %d", data_source, len(frame))
+    frame, source = load_training_data()
+    log.info("Data source: %s  |  rows: %d", source, len(frame))
 
     model = train_baseline(frame)
-    model["data_source"] = data_source
+    model["data_source"] = source
     joblib.dump(model, MODEL_PATH)
 
     training_time = time.time() - start_time
     log_training_metrics(frame, model, training_time)
 
-    print(f"\n✅ Saved baseline model to {MODEL_PATH}")
-    print(f"   Data source  : {data_source}")
+    print(f"\n✅ Model saved to {MODEL_PATH}")
+    print(f"   Data source  : {source}")
     print(f"   Training time: {training_time:.2f}s")
     print(f"   States       : {model['states']}")
     print(f"   Global mean  : {model['global_mean']}°C")

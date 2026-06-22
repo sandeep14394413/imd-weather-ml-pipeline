@@ -1,8 +1,23 @@
+# ============================================================
+# Deploy IMD Weather ML to kind
+# ============================================================
+# Triggered by:
+#   1. Push to main  (standard CI/CD)
+#   2. workflow_dispatch  (manual / called by imd-data-sync.yml)
+#
+# The [skip ci] commits from the data sync job do NOT trigger
+# this workflow via push — it is triggered explicitly by the
+# trigger-deploy job in imd-data-sync.yml instead.
+# ============================================================
+
 name: Deploy IMD Weather ML to kind
 
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "data/**"          # data commits use explicit trigger, not push
+      - "**.md"
   workflow_dispatch:
     inputs:
       cluster_name:
@@ -24,14 +39,27 @@ jobs:
       - name: Verify Python
         shell: powershell
         run: |
-         python --version
-         pip --version
+          python --version
+          pip --version
 
       - name: Install dependencies
         shell: powershell
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
+
+      - name: Show data summary
+        shell: powershell
+        run: |
+          if (Test-Path data/processed/data_summary.json) {
+            $s = Get-Content data/processed/data_summary.json | ConvertFrom-Json
+            Write-Host "Data source  : $($s.last_updated)"
+            Write-Host "Total rows   : $($s.total_rows)"
+            Write-Host "Date range   : $($s.date_min) to $($s.date_max)"
+            Write-Host "State count  : $($s.state_count)"
+          } else {
+            Write-Host "No data summary found — will use synthetic fallback during training."
+          }
 
       - name: Train and test latest model
         shell: powershell

@@ -1,0 +1,162 @@
+# ============================================================
+# IMD Data Sync Pipeline
+# ============================================================
+# Runs every day at 12:00 PM IST (06:30 UTC).
+#   Step 1 — Scrape yesterday’s tmax data via Open-Meteo API
+#   Step 2 — Append to data/processed/imd_tmax_daily.parquet
+#   Step 3 — Commit updated Parquet + summary JSON back to main
+#   Step 4 — Trigger the deploy pipeline (deploy-kind.yml)
+#
+# Can also be triggered manually with workflow_dispatch,
+# or with --mode historical for a full 40-year backfill.
+# ============================================================
+
+name: IMD Data Sync
+
+on:
+  schedule:
+    - cron: "30 6 * * *"   # 06:30 UTC = 12:00 PM IST
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Scrape mode"
+        required: false
+        default: "daily"
+        type: choice
+        options:
+          - daily
+          - historical
+      start_year:
+        description: "Historical start year (historical mode only)"
+        required: false
+        default: "1985"
+      end_year:
+        description: "Historical end year (historical mode only)"
+        required: false
+        default: "2024"
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  # ----------------------------------------------------------
+  # Job 1: Scrape + commit updated data
+  # ----------------------------------------------------------
+  scrape-and-commit:
+    name: Scrape IMD data
+    runs-on: self-hosted
+
+    outputs:
+      data_changed: ${{ steps.check-changes.outputs.data_changed }}
+      rows_added: ${{ steps.scrape.outputs.rows_added }}
+      date_max: ${{ steps.scrape.outputs.date_max }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Create data directories
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path data/raw/tmax | Out-Null
+          New-Item -ItemType Directory -Force -Path data/processed | Out-Null
+
+      - name: Run scraper
+        id: scrape
+        shell: powershell
+        run: |
+          $mode = "${{ github.event.inputs.mode || 'daily' }}"
+          if ($mode -eq "historical") {
+            $startYear = "${{ github.event.inputs.start_year || '1985' }}"
+            $endYear   = "${{ github.event.inputs.end_year   || '2024' }}"
+            python scripts/scrape_imd_data.py --mode historical --start-year $startYear --end-year $endYear
+          } else {
+            python scripts/scrape_imd_data.py --mode daily
+          }
+
+          # Parse summary JSON and expose as outputs
+          $summary = Get-Content data/processed/data_summary.json | ConvertFrom-Json
+          echo "rows_added=$($summary.total_rows)" >> $env:GITHUB_OUTPUT
+          echo "date_max=$($summary.date_max)" >> $env:GITHUB_OUTPUT
+
+      - name: Check for data changes
+        id: check-changes
+        shell: powershell
+        run: |
+          $status = git status --porcelain data/
+          if ($status) {
+            echo "data_changed=true"  >> $env:GITHUB_OUTPUT
+            Write-Host "Data files changed:"
+            Write-Host $status
+          } else {
+            echo "data_changed=false" >> $env:GITHUB_OUTPUT
+            Write-Host "No data changes detected."
+          }
+
+      - name: Commit updated data files
+        if: steps.check-changes.outputs.data_changed == 'true'
+        shell: powershell
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/processed/imd_tmax_daily.parquet
+          git add data/processed/data_summary.json
+          $dateStr = Get-Date -Format "yyyy-MM-dd"
+          git commit -m "data: daily IMD sync $dateStr  [skip ci]"
+          git push
+
+      - name: Print sync summary
+        shell: powershell
+        run: |
+          Write-Host "=============================="
+          Write-Host "  IMD Data Sync Summary"
+          Write-Host "=============================="
+          Write-Host "  Mode       : ${{ github.event.inputs.mode || 'daily' }}"
+          Write-Host "  Changed    : ${{ steps.check-changes.outputs.data_changed }}"
+          Write-Host "  Total rows : ${{ steps.scrape.outputs.rows_added }}"
+          Write-Host "  Latest date: ${{ steps.scrape.outputs.date_max }}"
+          Write-Host "=============================="
+
+  # ----------------------------------------------------------
+  # Job 2: Trigger deploy pipeline only when data changed
+  # ----------------------------------------------------------
+  trigger-deploy:
+    name: Trigger deploy pipeline
+    needs: scrape-and-commit
+    if: needs.scrape-and-commit.outputs.data_changed == 'true'
+    runs-on: self-hosted
+
+    steps:
+      - name: Trigger deploy-kind workflow
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              workflow_id: 'deploy-kind.yml',
+              ref: 'main',
+            });
+            core.info('deploy-kind.yml triggered successfully');
+
+      - name: Annotate deploy trigger
+        shell: powershell
+        run: |
+          Write-Host "Deploy pipeline triggered."
+          Write-Host "  Latest data: ${{ needs.scrape-and-commit.outputs.date_max }}"
+          Write-Host "  Total rows : ${{ needs.scrape-and-commit.outputs.rows_added }}"
