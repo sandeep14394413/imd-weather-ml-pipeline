@@ -1,0 +1,2 @@
+# Drop your IMD .GRD or ERA5 .nc files here.
+# Run: python scripts/download_imd_data.py --product tmax --years 5
