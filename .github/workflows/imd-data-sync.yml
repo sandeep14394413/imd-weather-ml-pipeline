@@ -120,15 +120,10 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Stage data files BEFORE pulling so they survive the rebase
           git add data/processed/imd_tmax_daily.parquet
           git add data/processed/data_summary.json
           $dateStr = Get-Date -Format "yyyy-MM-dd"
           git commit -m "data: daily IMD sync $dateStr  [skip ci]"
-
-          # FIX: rebase on top of any commits pushed since checkout
-          # (e.g. workflow fixes pushed mid-run cause non-fast-forward)
           $remote = "https://x-access-token:$env:GH_TOKEN@github.com/${{ github.repository }}.git"
           git pull --rebase $remote main
           git push $remote HEAD:main
@@ -147,6 +142,8 @@ jobs:
 
   # ----------------------------------------------------------
   # Job 2: Trigger deploy pipeline only when data changed
+  # FIX: gh CLI not available on Windows self-hosted runner.
+  #      Use PowerShell Invoke-RestMethod to call GitHub API directly.
   # ----------------------------------------------------------
   trigger-deploy:
     name: Trigger deploy pipeline
@@ -155,14 +152,20 @@ jobs:
     runs-on: self-hosted
 
     steps:
-      - name: Trigger deploy-kind workflow via gh CLI
+      - name: Trigger deploy-kind workflow via REST API
         shell: powershell
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh workflow run deploy-kind.yml `
-            --repo ${{ github.repository }} `
-            --ref main
+          $headers = @{
+            Authorization  = "Bearer $env:GH_TOKEN"
+            Accept         = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          $body = @{ ref = "main" } | ConvertTo-Json
+          $url  = "https://api.github.com/repos/${{ github.repository }}/actions/workflows/deploy-kind.yml/dispatches"
+
+          $resp = Invoke-RestMethod -Uri $url -Method POST -Headers $headers -Body $body -ContentType "application/json"
           Write-Host "deploy-kind.yml triggered successfully."
           Write-Host "  Latest data : ${{ needs.scrape-and-commit.outputs.date_max }}"
           Write-Host "  Total rows  : ${{ needs.scrape-and-commit.outputs.rows_added }}"
