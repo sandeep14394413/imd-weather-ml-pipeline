@@ -11,9 +11,9 @@ Strategy (in order of preference)
    download where a stable URL exists.
 2. IRI / LDEO Data Library  (iridl.ldeo.columbia.edu) – NCEP reanalysis
    NetCDF, no auth, covers 1948-present.
-3. Open-Meteo historical API (open-meteo.com) – JSON, free, no key,
-   covers 1940-present at 0.1° resolution.  Used as a reliable fallback
-   and for the *incremental daily update* (yesterday's data).
+3. Open-Meteo historical API (archive-api.open-meteo.com) – JSON, free,
+   no key, covers 1940-present at 0.1° resolution.  Used as a reliable
+   fallback and for the *incremental daily update* (yesterday's data).
 
 Usage
 -----
@@ -59,10 +59,11 @@ SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "imd-weather-ml-pipeline/1.0 (research)"})
 
 # ---------------------------------------------------------------------------
-# Open-Meteo API  —  free, no key, 1940-present, 0.1° grid
-# FIX: correct endpoint is api.open-meteo.com/v1/archive (not archive.api.*)
+# Open-Meteo Historical Archive API  —  free, no key, 1940-present, 0.1° grid
+# Correct subdomain: archive-api.open-meteo.com  (NOT api.* or archive.api.*)
+# Docs: https://open-meteo.com/en/docs/historical-weather-api
 # ---------------------------------------------------------------------------
-OM_URL = "https://api.open-meteo.com/v1/archive"
+OM_URL = "https://archive-api.open-meteo.com/v1/archive"
 
 
 def fetch_openmeteo_state(
@@ -116,11 +117,11 @@ def fetch_openmeteo_all_states(
         frames.append(df)
         time.sleep(0.3)  # polite rate-limiting
 
-    # FIX: guard against all-empty frames to avoid KeyError: 'date' on sort
+    # Guard against all-empty frames to avoid KeyError: 'date' on sort
     non_empty = [f for f in frames if not f.empty]
     if not non_empty:
         log.error(
-            "All state fetches returned empty — check network access to api.open-meteo.com"
+            "All state fetches returned empty — check network access to archive-api.open-meteo.com"
         )
         return pd.DataFrame(columns=["date", "state", "tmax_c"])
 
@@ -178,7 +179,6 @@ def upsert_parquet(new_data: pd.DataFrame) -> pd.DataFrame:
     existing = load_existing_parquet()
     combined = pd.concat([existing, new_data], ignore_index=True)
     combined["date"] = pd.to_datetime(combined["date"])
-    # Keep the last occurrence (new data wins)
     combined = (
         combined
         .sort_values("date")
@@ -224,7 +224,6 @@ def run_historical(start_year: int, end_year: int) -> None:
     start = date(start_year, 1, 1)
     end = date(end_year, 12, 31)
 
-    # Check what years we already have to skip them
     existing = load_existing_parquet()
     already_have: set[int] = set()
     if not existing.empty:
@@ -238,7 +237,6 @@ def run_historical(start_year: int, end_year: int) -> None:
         start = date(min(years_needed), 1, 1)
         end = date(max(years_needed), 12, 31)
 
-    # Open-Meteo: chunk by year to avoid timeouts
     all_frames: list[pd.DataFrame] = []
     for year in range(start.year, end.year + 1):
         if year in already_have:
@@ -250,7 +248,7 @@ def run_historical(start_year: int, end_year: int) -> None:
         if not df.empty:
             all_frames.append(df)
             log.info("  Year %d: %d rows fetched", year, len(df))
-        time.sleep(1)  # courteous pause between years
+        time.sleep(1)
 
     if all_frames:
         new_data = pd.concat(all_frames, ignore_index=True)
@@ -258,8 +256,7 @@ def run_historical(start_year: int, end_year: int) -> None:
         write_summary_json(final)
         log.info("Historical backfill complete. %d new rows added.", len(new_data))
     else:
-        log.warning("No new data fetched — check connectivity to api.open-meteo.com")
-        # Write a minimal summary so downstream workflow steps don't crash
+        log.warning("No new data fetched — check connectivity to archive-api.open-meteo.com")
         summary_path = ROOT / "data" / "processed" / "data_summary.json"
         summary_path.parent.mkdir(parents=True, exist_ok=True)
         summary_path.write_text(json.dumps({
